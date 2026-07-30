@@ -1,0 +1,6 @@
+# Applicant data — never published to the public repo
+submissions/
+
+# OS / editor cruft
+.DS_Store
+server.log
