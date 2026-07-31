@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "direct-lab.fullname" . }}-config
+  labels:
+    {{- include "direct-lab.labels" . | nindent 4 }}
+data:
+  MONGO_DB_NAME: {{ .Values.app.mongoDatabase | quote }}
+  SAVE_TO_LOCAL_DISK: {{ .Values.app.saveToLocalDisk | quote }}
+  SMTP_HOST: {{ .Values.app.smtp.host | quote }}
+  SMTP_PORT: {{ .Values.app.smtp.port | quote }}
+  {{- if .Values.app.notifyEmail }}
+  NOTIFY_EMAIL: {{ .Values.app.notifyEmail | quote }}
+  {{- end }}

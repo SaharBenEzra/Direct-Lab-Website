@@ -1,0 +1,56 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "direct-lab.fullname" . }}
+  labels:
+    {{- include "direct-lab.labels" . | nindent 4 }}
+spec:
+  {{- if not .Values.autoscaling.enabled }}
+  replicas: {{ .Values.replicaCount }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "direct-lab.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "direct-lab.selectorLabels" . | nindent 8 }}
+    spec:
+      containers:
+        - name: direct-lab
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.service.targetPort }}
+          env:
+            - name: MONGO_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "direct-lab.fullname" . }}-secrets
+                  key: MONGO_PASSWORD
+            - name: MONGO_URI
+              value: {{ include "direct-lab.mongoUri" . | quote }}
+          envFrom:
+            - configMapRef:
+                name: {{ include "direct-lab.fullname" . }}-config
+            - secretRef:
+                name: {{ include "direct-lab.fullname" . }}-secrets
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            # Deliberately checks "/" (static, no Mongo dependency), not
+            # /healthz — a brief Mongo outage should take the pod out of
+            # rotation via readinessProbe, not restart an otherwise-healthy
+            # process.
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}

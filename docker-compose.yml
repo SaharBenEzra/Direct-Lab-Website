@@ -1,0 +1,28 @@
+services:
+  mongo:
+    image: mongo:7
+    restart: unless-stopped
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo-data:/data/db
+
+  app:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "4174:4174"
+    environment:
+      MONGO_URI: mongodb://mongo:27017
+      MONGO_DB_NAME: directlab
+      SAVE_TO_LOCAL_DISK: "true"
+      # SMTP_USER / SMTP_PASS come from .env (gitignored) — see .env.example.
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASS: ${SMTP_PASS:-}
+    volumes:
+      - ./submissions:/app/submissions
+    depends_on:
+      - mongo
+
+volumes:
+  mongo-data:

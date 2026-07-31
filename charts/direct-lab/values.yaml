@@ -1,0 +1,71 @@
+image:
+  repository: ghcr.io/saharbenezra/direct-lab-website
+  tag: "latest"
+  pullPolicy: IfNotPresent
+
+replicaCount: 2
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 256Mi
+
+service:
+  port: 80
+  targetPort: 4174
+
+ingress:
+  enabled: false
+  className: ""
+  host: direct-lab.example.com
+  annotations: {}
+  # tls.secretName: a Secret of type kubernetes.io/tls that already holds the
+  # certificate (e.g. one created by cert-manager). This chart does not
+  # provision cert-manager itself.
+  tls:
+    enabled: false
+    secretName: ""
+
+autoscaling:
+  enabled: false
+  minReplicas: 2
+  maxReplicas: 5
+  targetCPUUtilizationPercentage: 70
+
+app:
+  # Optional override of the NOTIFY_EMAIL constant baked into app.py.
+  # Leave "" to use the code default.
+  notifyEmail: ""
+  saveToLocalDisk: false
+  mongoDatabase: directlab
+  mongoUser: directlab
+  # Real value goes in values.secrets.yaml — must equal mongodb.auth.passwords[0] below.
+  mongoPassword: ""
+  smtp:
+    host: smtp.gmail.com
+    port: 465
+    # Real values go in values.secrets.yaml — never commit real credentials here.
+    user: ""
+    pass: ""
+
+# Self-hosted MongoDB inside the cluster, via the Bitnami chart (see
+# Chart.yaml dependencies). Its own persistence (a PVC) is unrelated to
+# app.saveToLocalDisk — that flag is about the *application's* own disk
+# writes, which are dev-only and off here by default.
+mongodb:
+  enabled: true
+  fullnameOverride: direct-lab-mongodb
+  architecture: standalone
+  auth:
+    enabled: true
+    # All real passwords go in values.secrets.yaml — never commit them here.
+    rootPassword: ""
+    usernames: ["directlab"]
+    passwords: [""]
+    databases: ["directlab"]
+  persistence:
+    enabled: true
+    size: 8Gi

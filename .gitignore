@@ -7,3 +7,20 @@ server.log
 
 # Real SMTP credentials — copy .env.example to .env and fill it in locally
 .env
+
+# Python
+__pycache__/
+*.pyc
+.venv*/
+.pytest_cache/
+
+# Real Helm secret values — copy values.secrets.yaml.example and fill it in
+charts/direct-lab/values.secrets.yaml
+
+# Helm dependency charts fetched by `helm dependency build` — not source
+charts/direct-lab/charts/
+charts/direct-lab/Chart.lock
+
+# Local Mongo data volume if bind-mounted for dev
+mongo-data/
+

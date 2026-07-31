@@ -1,0 +1,16 @@
+Direct Lab is deployed.
+
+Check pod status:
+  kubectl get pods -l app.kubernetes.io/instance={{ .Release.Name }}
+
+{{- if .Values.ingress.enabled }}
+Site: http{{ if .Values.ingress.tls.enabled }}s{{ end }}://{{ .Values.ingress.host }}
+{{- else }}
+No Ingress is enabled (ingress.enabled=false). Reach it for now with:
+  kubectl port-forward svc/{{ include "direct-lab.fullname" . }} 8080:{{ .Values.service.port }}
+  open http://localhost:8080
+{{- end }}
+
+Check backend health (includes a live Mongo ping):
+  kubectl exec deploy/{{ include "direct-lab.fullname" . }} -- python3 -c \
+    "import urllib.request; print(urllib.request.urlopen('http://localhost:{{ .Values.service.targetPort }}/healthz').read())"

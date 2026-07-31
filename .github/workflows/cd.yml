@@ -1,0 +1,69 @@
+name: CD (deploy to Kubernetes)
+
+# Inert until a real cluster exists: this job only runs on push to main if
+# the KUBE_CONFIG_DATA secret is set (or always on a manual run, for a
+# deliberate one-off deploy). Until IT adds that secret, this workflow is a
+# no-op — nothing here needs code changes once it's time to enable it.
+#
+# Required repo secrets before this can actually deploy:
+#   KUBE_CONFIG_DATA     base64-encoded kubeconfig for the target cluster
+#   MONGO_ROOT_PASSWORD  MongoDB root password
+#   MONGO_APP_PASSWORD   MongoDB password for the app's own "directlab" user
+#   SMTP_USER            Gmail address submissions are sent from
+#   SMTP_PASS            Gmail App Password for that account
+#
+# See charts/direct-lab/values.secrets.yaml.example for what these map to.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    if: ${{ github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check that cluster access is configured
+        id: check
+        run: |
+          if [ -n "${{ secrets.KUBE_CONFIG_DATA }}" ]; then
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::KUBE_CONFIG_DATA secret not set — skipping deploy. This is expected until IT wires up real cluster access."
+          fi
+
+      - uses: azure/setup-kubectl@v4
+        if: steps.check.outputs.configured == 'true'
+      - uses: azure/setup-helm@v4
+        if: steps.check.outputs.configured == 'true'
+
+      - name: Configure kubeconfig
+        if: steps.check.outputs.configured == 'true'
+        run: |
+          mkdir -p "$HOME/.kube"
+          echo "${{ secrets.KUBE_CONFIG_DATA }}" | base64 -d > "$HOME/.kube/config"
+
+      - name: Fetch chart dependencies
+        if: steps.check.outputs.configured == 'true'
+        run: helm dependency build charts/direct-lab
+
+      - name: Deploy
+        if: steps.check.outputs.configured == 'true'
+        run: |
+          helm upgrade --install direct-lab charts/direct-lab \
+            -f charts/direct-lab/values.yaml \
+            --set image.tag=sha-${{ github.sha }} \
+            --set app.mongoPassword="${{ secrets.MONGO_APP_PASSWORD }}" \
+            --set app.smtp.user="${{ secrets.SMTP_USER }}" \
+            --set app.smtp.pass="${{ secrets.SMTP_PASS }}" \
+            --set mongodb.auth.rootPassword="${{ secrets.MONGO_ROOT_PASSWORD }}" \
+            --set mongodb.auth.passwords[0]="${{ secrets.MONGO_APP_PASSWORD }}" \
+            --wait --timeout 5m
+
+      - name: Verify rollout
+        if: steps.check.outputs.configured == 'true'
+        run: kubectl rollout status deployment/direct-lab --timeout=120s

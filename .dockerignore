@@ -1,0 +1,11 @@
+.git
+.github
+.env
+.env.example
+submissions/
+charts/
+*.md
+.DS_Store
+server.log
+__pycache__/
+*.pyc
