@@ -36,7 +36,7 @@ Then open `http://localhost:4174`. This starts MongoDB alongside the app; submis
 **Option B — plain Python, against your own Mongo:**
 
 ```bash
-pip install -r requirements.txt
+pip3 install -r requirements.txt
 python3 app.py
 ```
 
