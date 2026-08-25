@@ -3,20 +3,33 @@
 
 Serves index.html and handles POST /submit. On every submission:
 
-  1. MongoDB (required) — the record + attachments (via GridFS) are saved.
-     This is the single source of truth. If this fails, the request fails
-     and the frontend falls back to the visitor's browser local storage,
+  1. MongoDB (required) — the record + attachment metadata are saved. This
+     is the single source of truth. If this fails, the request fails and
+     the frontend falls back to the visitor's browser local storage,
      exactly as it already does for any backend failure.
+
+     Uploaded files arrive in one of two shapes, and both are handled:
+       - inline base64 ("dataB64") — the original contract, used when the
+         frontend can't reach Vercel Blob (e.g. this app self-hosted on
+         Docker/Kubernetes). Bytes go into GridFS alongside the record.
+       - a Vercel Blob URL ("url") — used when the frontend successfully
+         uploaded the file straight to Blob storage first (see
+         api/blob-upload.js). Only the URL + metadata is stored; the bytes
+         already live durably in Blob, so they aren't duplicated into
+         Mongo/GridFS (this also matters for Atlas's free-tier storage cap).
+
   2. Email (best-effort) — the same data is emailed to NOTIFY_EMAIL so a
      future inbox-reading bot can pick it up. A failure here is logged but
      never fails the request — the submission is already safe in Mongo.
   3. Local disk (best-effort, opt-in via SAVE_TO_LOCAL_DISK) — convenience
-     for local development only. Kubernetes pods don't have durable local
-     disk, so this is off by default there; Mongo is what matters in
-     production.
+     for local development only. Neither Kubernetes pods nor Vercel
+     functions have durable local disk, so this is off by default in both;
+     Mongo is what matters in production.
 
 Run for local dev:  python3 app.py            (http://localhost:4174)
 Run in production:  gunicorn -b 0.0.0.0:4174 app:app   (see Dockerfile)
+Run on Vercel:       this file is a supported entrypoint (app.py) —
+                     Vercel detects the Flask `app` instance automatically.
 """
 import base64
 import json
@@ -25,6 +38,7 @@ import os
 import re
 import smtplib
 import ssl
+import urllib.request
 from datetime import datetime
 from email.message import EmailMessage
 from io import BytesIO
@@ -57,7 +71,10 @@ def load_dotenv() -> None:
 load_dotenv()
 
 # --- Config -----------------------------------------------------------
-MONGO_URI = os.environ.get("MONGO_URI", "mongodb://localhost:27017")
+# MONGO_URI is our own name; MONGODB_URI is what Vercel's MongoDB Atlas
+# Marketplace integration injects — accept either so connecting Atlas on
+# Vercel needs no renaming.
+MONGO_URI = os.environ.get("MONGO_URI") or os.environ.get("MONGODB_URI") or "mongodb://localhost:27017"
 MONGO_DB_NAME = os.environ.get("MONGO_DB_NAME", "directlab")
 SAVE_TO_LOCAL_DISK = os.environ.get("SAVE_TO_LOCAL_DISK", "true").lower() == "true"
 
@@ -149,10 +166,22 @@ def build_summary(record: dict, attachments: list) -> str:
     return "\n".join(lines)
 
 
-def save_to_mongo(record: dict, decoded_files: list, submitted_at: datetime) -> list:
-    """Upload attachments to GridFS, insert the record, return attachment
-    metadata (no raw bytes — those live in GridFS) for reuse in the
-    summary/email.
+def fetch_url_bytes(url: str, max_bytes: int = 30 * 1024 * 1024) -> bytes:
+    """Fetch a Blob-hosted file's bytes (for emailing it as an attachment).
+    Capped so one huge deck can't blow up function memory; callers treat a
+    failure here as "skip this attachment", not a hard error.
+    """
+    with urllib.request.urlopen(url, timeout=10) as resp:
+        return resp.read(max_bytes + 1)[:max_bytes]
+
+
+def save_to_mongo(record: dict, decoded_files: list, blob_files: list, submitted_at: datetime) -> list:
+    """Insert the record with attachment metadata, return that metadata for
+    reuse in the summary/email.
+
+    decoded_files (raw bytes) go into GridFS. blob_files (already durably
+    stored in Vercel Blob) are referenced by URL only — no bytes touch
+    Mongo for those, by design.
     """
     attachments_meta = []
     for f in decoded_files:
@@ -168,6 +197,14 @@ def save_to_mongo(record: dict, decoded_files: list, submitted_at: datetime) -> 
             "size": len(f["data"]),
             "gridfsId": str(file_id),
         })
+    for f in blob_files:
+        attachments_meta.append({
+            "field": f["field"],
+            "filename": f["filename"],
+            "contentType": f["contentType"],
+            "size": f["size"],
+            "blobUrl": f["url"],
+        })
 
     doc = dict(record)
     doc["submittedAt"] = submitted_at
@@ -176,7 +213,7 @@ def save_to_mongo(record: dict, decoded_files: list, submitted_at: datetime) -> 
     return attachments_meta
 
 
-def send_submission_email(record: dict, decoded_files: list, summary_text: str) -> None:
+def send_submission_email(record: dict, decoded_files: list, blob_files: list, summary_text: str) -> None:
     """Best-effort email of the submission. Raises on failure — the caller
     logs and swallows it, since Mongo already has the durable copy.
     """
@@ -198,6 +235,15 @@ def send_submission_email(record: dict, decoded_files: list, summary_text: str) 
     for f in decoded_files:
         maintype, _, subtype = f["contentType"].partition("/")
         msg.add_attachment(f["data"], maintype=maintype, subtype=subtype or "octet-stream", filename=f["filename"])
+
+    for f in blob_files:
+        try:
+            data = fetch_url_bytes(f["url"])
+        except Exception as exc:  # noqa: BLE001 — one bad attachment shouldn't lose the email
+            app.logger.warning("could not fetch blob attachment '%s' for email: %s", f["filename"], exc)
+            continue
+        maintype, _, subtype = f["contentType"].partition("/")
+        msg.add_attachment(data, maintype=maintype, subtype=subtype or "octet-stream", filename=f["filename"])
 
     context = ssl.create_default_context()
     with smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT, context=context) as server:
@@ -239,23 +285,35 @@ def submit():
     record = payload.get("record") or {}
     incoming_files = payload.get("files") or []
 
-    decoded_files = []
+    decoded_files = []  # inline base64 — bytes travel in this request
+    blob_files = []     # already uploaded to Vercel Blob — URL reference only
     for f in incoming_files:
         filename = safe_name(str(f.get("name", "file")), "file")
-        data = base64.b64decode(f.get("dataB64", "") or "")
-        content_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
-        decoded_files.append({
-            "field": f.get("field", ""),
-            "filename": filename,
-            "contentType": content_type,
-            "data": data,
-        })
+        field = f.get("field", "")
+        if f.get("url"):
+            content_type = f.get("contentType") or mimetypes.guess_type(filename)[0] or "application/octet-stream"
+            blob_files.append({
+                "field": field,
+                "filename": filename,
+                "contentType": content_type,
+                "size": int(f.get("size") or 0),
+                "url": f["url"],
+            })
+        else:
+            data = base64.b64decode(f.get("dataB64", "") or "")
+            content_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
+            decoded_files.append({
+                "field": field,
+                "filename": filename,
+                "contentType": content_type,
+                "data": data,
+            })
 
     submitted_at = datetime.utcnow()
     submitted_at_iso = submitted_at.isoformat(timespec="seconds") + "Z"
 
     try:
-        attachments_meta = save_to_mongo(record, decoded_files, submitted_at)
+        attachments_meta = save_to_mongo(record, decoded_files, blob_files, submitted_at)
     except Exception as exc:  # noqa: BLE001 — Mongo is required; surface the failure
         app.logger.exception("Mongo save failed")
         return jsonify(ok=False, error=f"database error: {exc}"), 502
@@ -264,7 +322,7 @@ def submit():
     summary_text = build_summary(display_record, attachments_meta)
 
     try:
-        send_submission_email(display_record, decoded_files, summary_text)
+        send_submission_email(display_record, decoded_files, blob_files, summary_text)
     except Exception as exc:  # noqa: BLE001 — email is best-effort
         app.logger.warning("email send failed: %s", exc)
 

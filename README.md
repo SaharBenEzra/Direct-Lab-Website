@@ -2,26 +2,72 @@
 
 Landing page + application form for Direct Lab, the innovation hub of Zur Shamir Group (IDI Direct Insurance, Mimun Yashir, Adgar), founded with MSI.
 
-This repo is meant to be handed to IT/engineering as-is: they take the files and wire them into the company's own servers. Everything needed to build, test, containerize and deploy it is in this repo.
+**Two ways to run this in production, both fully built out in this repo:**
+
+- **Vercel + MongoDB Atlas** (recommended — see [Deploy to Vercel](#deploy-to-vercel-recommended)) — the fastest path to a live URL, no servers to manage.
+- **Self-hosted (Docker / Kubernetes)** — for when IT wants it on the company's own infrastructure (see [Kubernetes (Helm)](#kubernetes-helm)).
+
+Both share the same `app.py` and `index.html` — the frontend detects which backend it's talking to at runtime and adjusts (see "Two upload paths" below), so there's exactly one codebase to maintain either way.
 
 ## Architecture
 
 - `index.html` — the entire site: hero, About us, application form. Self-contained (logos embedded as base64), no build step.
-- `app.py` — the backend (Flask). Serves `index.html` and handles `POST /submit`.
+- `app.py` — the backend (Flask). Serves `index.html` and handles `POST /submit`. This one file is also the entrypoint Vercel's Python runtime detects automatically.
 - `requirements.txt` / `requirements-dev.txt` — runtime deps (Flask, gunicorn, pymongo) and dev deps (+ pytest).
-- `tests/` — pytest suite covering `/healthz`, a successful submission, and the failure/fallback behavior described below.
-- `Dockerfile` / `.dockerignore` — production container image (gunicorn, non-root user, healthcheck).
+- `tests/` — pytest suite covering `/healthz`, a successful submission, both upload paths, and the failure/fallback behavior described below.
+- `api/blob-upload.js`, `package.json` — Vercel-only: the Node.js function that issues Vercel Blob upload tokens (see "Two upload paths"). Not used by the Docker/K8s path.
+- `vercel.json`, `.vercelignore` — Vercel project config.
+- `Dockerfile` / `.dockerignore` — production container image (gunicorn, non-root user, healthcheck). Docker/K8s path only.
 - `docker-compose.yml` — app + MongoDB for local development.
 - `Start Direct Lab.command` — double-click launcher (macOS): runs `docker-compose up` and opens the site. Local dev convenience only, not used in production.
-- `charts/direct-lab/` — Helm chart for Kubernetes (see below).
-- `.github/workflows/` — CI (test + build/push image) and CD (deploy via Helm).
+- `charts/direct-lab/` — Helm chart for Kubernetes (see below). Docker/K8s path only.
+- `.github/workflows/` — CI (test + build/push image) and CD (deploy via Helm) for the Docker/K8s path. Vercel deploys itself on every push once the GitHub repo is connected — no separate workflow needed.
 - `submissions/` — created at runtime only when local-disk saving is enabled (see below). **Never committed** — real applicant data.
 
 On every submission, three things happen:
 
-1. **MongoDB (required)** — the record is inserted, and every uploaded file goes into GridFS alongside it. This is the single source of truth. If this fails, the request fails (`502`) and the frontend falls back to the visitor's browser local storage, same as it already does for any backend failure.
+1. **MongoDB (required)** — the record is inserted. This is the single source of truth. If this fails, the request fails (`502`) and the frontend falls back to the visitor's browser local storage, same as it already does for any backend failure.
 2. **Email (best-effort)** — the same data is emailed to `NOTIFY_EMAIL` (a constant near the top of `app.py` — edit it, or override with the `NOTIFY_EMAIL` env var without touching code) via Gmail SMTP, in the same plain "Label: value" format as before, so a future inbox-reading bot can parse it. A failure here is logged but never fails the request.
-3. **Local disk (best-effort, opt-in via `SAVE_TO_LOCAL_DISK=true`)** — dev convenience only. Kubernetes pods don't have durable local disk, so this is `false` by default in the Dockerfile and in the Helm chart; Mongo is what matters in production. It's `true` by default in `docker-compose.yml` for easy local inspection.
+3. **Local disk (best-effort, opt-in via `SAVE_TO_LOCAL_DISK=true`)** — dev convenience only. Neither Kubernetes pods nor Vercel functions have durable local disk, so this is `false` by default in the Dockerfile, the Helm chart, and on Vercel; Mongo is what matters in production. It's `true` by default in `docker-compose.yml` for easy local inspection.
+
+### Two upload paths (why there's a Node.js file in a Python project)
+
+Uploaded files reach the backend one of two ways, and `index.html` picks automatically:
+
+- **Vercel Blob** (used when deployed on Vercel): the browser uploads the file straight to Blob storage via a token it gets from `api/blob-upload.js`, then sends `/submit` just a `{ url, ... }` reference. Bytes never pass through the Python function, so upload size isn't limited by a function's request-body cap, and files aren't duplicated into Mongo (relevant since Atlas's free tier has a small storage cap). Mongo stores `{ field, filename, contentType, size, blobUrl }` for these.
+- **Inline base64** (the original design, used everywhere else — Docker, Kubernetes, or if Blob is simply unreachable): the file is embedded as base64 straight in the `/submit` JSON body, decoded server-side, and stored in **GridFS** alongside the record. Mongo stores `{ field, filename, contentType, size, gridfsId }` for these.
+
+The frontend always tries Blob first and falls back to inline base64 on any failure (network error, 404 because `/api/blob-upload` doesn't exist on this host, etc.) — so the exact same `index.html` works correctly against either backend without knowing which one it's talking to.
+
+## Deploy to Vercel (recommended)
+
+This needs three things connected in the Vercel dashboard, then it deploys itself on every push.
+
+**1. Import the repo.** [vercel.com/new](https://vercel.com/new) → Import Git Repository → pick `SaharBenEzra/Direct-Lab-Website`. Vercel auto-detects `app.py` as a Flask entrypoint and `api/blob-upload.js` as a Node function — no build configuration needed, `vercel.json` already covers it.
+
+**2. Add MongoDB Atlas** (Project → Storage tab → Browse Marketplace → MongoDB Atlas, or `vercel integration add mongodb-atlas` from the CLI once the project is linked). This provisions a free-tier Atlas cluster and injects its connection string as an env var automatically — `app.py` reads either `MONGO_URI` or `MONGODB_URI`, so whichever name the integration uses works with no renaming.
+
+**3. Add Vercel Blob** (Project → Storage tab → Create Database → Blob, or `vercel blob store add`). This injects `BLOB_READ_WRITE_TOKEN`, which `api/blob-upload.js` needs. Without it, uploads still work — they just silently fall back to the slower inline-base64 path (see "Two upload paths" above).
+
+**4. Set the remaining environment variables** (Project → Settings → Environment Variables):
+
+| Variable | Value |
+|---|---|
+| `SMTP_USER` | Gmail address to send submission emails from |
+| `SMTP_PASS` | a Gmail **App Password** for that account (Google Account → Security → 2-Step Verification → App passwords) — not the regular password |
+| `NOTIFY_EMAIL` | *(optional)* overrides the `NOTIFY_EMAIL` constant in `app.py` without a code change |
+
+Redeploy after adding these (Vercel doesn't hot-reload env var changes into a running deployment).
+
+**Local dev against the same Vercel project** (optional, needs `npm i -g vercel` and `vercel login` first):
+
+```bash
+vercel link
+vercel env pull .env.local   # pulls the real MONGO_URI / BLOB_READ_WRITE_TOKEN etc.
+vercel dev
+```
+
+**One thing worth a quick smoke test after the first deploy:** `api/blob-upload.js` (a Node function) and `app.py` (the Flask catch-all) are two different runtimes coexisting in one project — this is Vercel's documented, standard pattern, but confirm in practice that a real upload goes through Blob rather than silently falling back every time (Network tab → submit the form → look for a successful call to `/api/blob-upload` before `/submit`). If it's always falling back, check the Blob store is actually connected to the project (step 3).
 
 ## Running locally
 
@@ -57,9 +103,8 @@ Needs a reachable, disposable MongoDB (tests use a `directlab_test` database and
 
 ## The `/submit` contract
 
-Unchanged from before, so `index.html` needed no changes for any of this:
-
-- `POST /submit` with `{ "record": { ...form fields... }, "files": [ { "name", "field", "dataB64" }, ... ] }`.
+- `POST /submit` with `{ "record": { ...form fields... }, "files": [ ...one entry per file... ] }`.
+- Each file entry is **either** `{ "name", "field", "dataB64" }` (inline bytes) **or** `{ "name", "field", "url", "contentType", "size" }` (Blob reference) — see "Two upload paths" above. `app.py` branches on whether `url` is present.
 - `200 {"ok": true}` on success. Non-2xx on failure (the frontend already falls back to local storage on any backend failure, so a slow/broken backend degrades gracefully).
 - Form field keys/labels are in `FIELDS` at the top of `app.py` — the single source of truth for what the frontend sends.
 
@@ -97,7 +142,7 @@ Key values (`charts/direct-lab/values.yaml`):
 
 This was validated end-to-end on a real local cluster (colima + k3s) during development: `helm lint`, `helm template` + `kubeconform` schema validation, then an actual install with both pods reaching `Ready`, a real submission through the cluster's Service, and confirming the record + GridFS attachment landed in the in-cluster MongoDB.
 
-## CI/CD (GitHub Actions)
+## CI/CD (Docker/Kubernetes path — GitHub Actions)
 
 - **`.github/workflows/ci.yml`** — on every push/PR: installs deps, runs the pytest suite against a real `mongo:7` service container. On push to `main` only, also builds the Docker image and pushes it to `ghcr.io/saharbenezra/direct-lab-website` (tagged by commit SHA and `latest`).
 - **`.github/workflows/cd.yml`** — deploys via `helm upgrade --install`, using the same chart described above. **Inert by default** — it checks for a `KUBE_CONFIG_DATA` secret and cleanly skips the deploy steps if it's not set, so this workflow needs no code changes once a real cluster is ready; it just needs these repo secrets added (Settings → Secrets and variables → Actions):
@@ -114,6 +159,7 @@ This was validated end-to-end on a real local cluster (colima + k3s) during deve
 
 ## Notes for whoever deploys this
 
-- **Never commit real credentials.** `.env`, `charts/direct-lab/values.secrets.yaml`, and the CI/CD secrets above are all the only places real passwords/keys should exist — never in a values.yaml, app.py, or a workflow file.
-- **`submissions/` (when enabled) contains personal data** (applicant names, emails, phone numbers, uploaded files) — same for the MongoDB data itself. Treat both with normal PII handling: no public exposure, proper backup/retention policy for the production Mongo instance.
+- **Never commit real credentials.** `.env`, `charts/direct-lab/values.secrets.yaml`, the GitHub Actions secrets, and Vercel's Environment Variables are the only places real passwords/keys should exist — never in a values.yaml, `app.py`, or a workflow file.
+- **`submissions/` (when enabled) contains personal data** (applicant names, emails, phone numbers, uploaded files) — same for the MongoDB data itself and for files in Vercel Blob. Treat all of these with normal PII handling: no public exposure, proper backup/retention policy for the production Mongo instance.
+- **MongoDB Atlas's free tier (M0) has a small storage cap** (512MB at the time of writing) — this is exactly why the Blob upload path stores files in Blob and only a URL reference in Mongo, rather than duplicating bytes into GridFS. If Atlas ever gets upgraded off the free tier, nothing about this design needs to change.
 - **Mongo is the source of truth.** If it's unreachable, submissions correctly fail loudly (`502`) rather than silently disappearing — the frontend's local-storage fallback exists for exactly this case, but it's a safety net, not a replacement for Mongo being up.

@@ -1,0 +1,11 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "functions": {
+    "app.py": {
+      "maxDuration": 30
+    },
+    "api/blob-upload.js": {
+      "maxDuration": 15
+    }
+  }
+}

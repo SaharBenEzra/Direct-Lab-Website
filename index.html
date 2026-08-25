@@ -673,8 +673,31 @@
       });
     }
 
-    var jobs = uploads.deck.map(function (f) { return fileToB64(f, 'deck'); })
-      .concat(uploads.logo.map(function (f) { return fileToB64(f, 'logo'); }));
+    // On Vercel, upload straight to Blob storage (bypasses this page's own
+    // backend entirely, so file size isn't limited by a function payload
+    // cap). Anywhere else — e.g. this same page self-hosted on Docker/K8s,
+    // where /api/blob-upload doesn't exist — this rejects quickly and we
+    // fall back to the original inline-base64 path, which those backends
+    // already fully support. Either way /submit receives one of two shapes
+    // per file: { url, ... } or { dataB64, ... }.
+    function uploadFile(file, field) {
+      return import('https://esm.sh/@vercel/blob@2.8.0/client')
+        .then(function (mod) {
+          return mod.upload(file.name, file, {
+            access: 'public',
+            handleUploadUrl: '/api/blob-upload'
+          });
+        })
+        .then(function (blob) {
+          return { name: file.name, field: field, size: file.size, contentType: file.type, url: blob.url };
+        })
+        .catch(function () {
+          return fileToB64(file, field);
+        });
+    }
+
+    var jobs = uploads.deck.map(function (f) { return uploadFile(f, 'deck'); })
+      .concat(uploads.logo.map(function (f) { return uploadFile(f, 'logo'); }));
 
     Promise.all(jobs).then(function (files) {
       return fetch('/submit', {

@@ -9,3 +9,14 @@ charts/
 server.log
 __pycache__/
 *.pyc
+.venv*/
+.pytest_cache/
+
+# Vercel-only — the Docker image is Python/Flask only
+api/
+node_modules/
+package.json
+package-lock.json
+vercel.json
+.vercelignore
+tests/

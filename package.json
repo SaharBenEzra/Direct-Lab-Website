@@ -1,0 +1,9 @@
+{
+  "name": "direct-lab-website",
+  "private": true,
+  "type": "module",
+  "description": "Node dependency manifest for api/blob-upload.js only — the rest of the backend is Python (see requirements.txt).",
+  "dependencies": {
+    "@vercel/blob": "2.8.0"
+  }
+}

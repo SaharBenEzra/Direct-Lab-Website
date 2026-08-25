@@ -1,0 +1,10 @@
+charts/
+submissions/
+tests/
+.github/
+Dockerfile
+.dockerignore
+docker-compose.yml
+Start Direct Lab.command
+.env
+server.log

@@ -24,3 +24,7 @@ charts/direct-lab/Chart.lock
 # Local Mongo data volume if bind-mounted for dev
 mongo-data/
 
+# Node deps for api/blob-upload.js — package-lock.json IS committed (Vercel's
+# build needs it); only the installed tree is ignored.
+node_modules/
+

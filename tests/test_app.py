@@ -87,6 +87,52 @@ def test_submit_returns_502_when_mongo_save_fails(client):
     assert app_module.mongo_db["submissions"].find_one({"companyName": "Should Not Save"}) is None
 
 
+def test_submit_with_blob_url_attachment_stores_reference_not_gridfs(client):
+    payload = {
+        "record": {"companyName": "Blob Uploader Co", "email": "blob@example.com"},
+        "files": [
+            {
+                "name": "pitch.pdf",
+                "field": "deck",
+                "url": "https://example-blob.public.blob.vercel-storage.com/pitch-abc123.pdf",
+                "contentType": "application/pdf",
+                "size": 4096,
+            }
+        ],
+    }
+    resp = client.post("/submit", json=payload)
+    assert resp.status_code == 200
+    assert resp.get_json() == {"ok": True}
+
+    doc = app_module.mongo_db["submissions"].find_one({"companyName": "Blob Uploader Co"})
+    assert doc is not None
+    assert len(doc["attachments"]) == 1
+    attachment = doc["attachments"][0]
+    assert attachment["blobUrl"].startswith("https://example-blob")
+    assert "gridfsId" not in attachment
+
+    # The whole point of the Blob path is to NOT duplicate bytes into Mongo.
+    assert app_module.mongo_db["attachments.files"].count_documents({"filename": "pitch.pdf"}) == 0
+
+
+def test_blob_attachment_email_fetch_failure_does_not_break_the_email(client):
+    with patch.object(app_module, "fetch_url_bytes", side_effect=RuntimeError("network down")):
+        with patch.object(app_module, "SMTP_USER", "sender@example.com"), \
+             patch.object(app_module, "SMTP_PASS", "fake"), \
+             patch.object(app_module, "NOTIFY_EMAIL", "notify@example.com"), \
+             patch("smtplib.SMTP_SSL") as mock_smtp:
+            mock_smtp.return_value.__enter__.return_value = mock_smtp.return_value
+            payload = {
+                "record": {"companyName": "Flaky Blob Co"},
+                "files": [{"name": "x.pdf", "field": "deck", "url": "https://example.com/x.pdf",
+                           "contentType": "application/pdf", "size": 10}],
+            }
+            resp = client.post("/submit", json=payload)
+            assert resp.status_code == 200
+            # Email still gets sent (with details.json only) despite the failed attachment fetch.
+            mock_smtp.return_value.send_message.assert_called_once()
+
+
 def test_email_failure_does_not_fail_the_request(client):
     with patch.object(app_module, "send_submission_email", side_effect=RuntimeError("smtp down")):
         resp = client.post("/submit", json={"record": {"companyName": "Email Down Co"}, "files": []})
