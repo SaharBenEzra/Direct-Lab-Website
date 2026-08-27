@@ -112,7 +112,7 @@ FIELDS = [
     ("article", "Optional Article"),
 ]
 
-mongo_client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=3000)
+mongo_client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=3000, socketTimeoutMS=8000, connectTimeoutMS=5000)
 mongo_db = mongo_client[MONGO_DB_NAME]
 fs_bucket = GridFSBucket(mongo_db, bucket_name="attachments")
 
@@ -245,8 +245,13 @@ def send_submission_email(record: dict, decoded_files: list, blob_files: list, s
         maintype, _, subtype = f["contentType"].partition("/")
         msg.add_attachment(data, maintype=maintype, subtype=subtype or "octet-stream", filename=f["filename"])
 
+    # timeout is essential here: some serverless platforms (Vercel included)
+    # throttle or silently drop outbound SMTP traffic, and without a bound
+    # this call can hang far past any reasonable request latency — email is
+    # meant to be best-effort, but a hang here still blocks the whole
+    # /submit response since it runs before the client gets an answer.
     context = ssl.create_default_context()
-    with smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT, context=context) as server:
+    with smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT, context=context, timeout=8) as server:
         server.login(SMTP_USER, SMTP_PASS)
         server.send_message(msg)
     app.logger.info("emailed submission for '%s' to %s", company, NOTIFY_EMAIL)
