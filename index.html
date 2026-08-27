@@ -676,12 +676,22 @@
     // On Vercel, upload straight to Blob storage (bypasses this page's own
     // backend entirely, so file size isn't limited by a function payload
     // cap). Anywhere else — e.g. this same page self-hosted on Docker/K8s,
-    // where /api/blob-upload doesn't exist — this rejects quickly and we
-    // fall back to the original inline-base64 path, which those backends
-    // already fully support. Either way /submit receives one of two shapes
-    // per file: { url, ... } or { dataB64, ... }.
+    // where /api/blob-upload doesn't exist — this fails and we fall back
+    // to the original inline-base64 path, which those backends already
+    // fully support. Either way /submit receives one of two shapes per
+    // file: { url, ... } or { dataB64, ... }.
+    //
+    // IMPORTANT: @vercel/blob/client's upload() retries retryable errors
+    // (e.g. a transient 503 from Blob storage) internally before it ever
+    // rejects — a plain .catch() here would NOT reliably fall back, since
+    // the promise can stay pending through several retries instead of
+    // rejecting quickly. Promise.race against a hard timeout guarantees
+    // the fallback fires on a bounded clock regardless of what's
+    // happening inside upload() — a genuinely broken/unreachable Blob
+    // endpoint degrades to base64 within ~25s instead of leaving the
+    // visitor stuck on "Submitting…" indefinitely.
     function uploadFile(file, field) {
-      return import('https://esm.sh/@vercel/blob@2.8.0/client')
+      var blobAttempt = import('https://esm.sh/@vercel/blob@2.8.0/client')
         .then(function (mod) {
           return mod.upload(file.name, file, {
             access: 'public',
@@ -690,10 +700,15 @@
         })
         .then(function (blob) {
           return { name: file.name, field: field, size: file.size, contentType: file.type, url: blob.url };
-        })
-        .catch(function () {
-          return fileToB64(file, field);
         });
+
+      var timeout = new Promise(function (_, reject) {
+        setTimeout(function () { reject(new Error('blob upload timed out')); }, 25000);
+      });
+
+      return Promise.race([blobAttempt, timeout]).catch(function () {
+        return fileToB64(file, field);
+      });
     }
 
     var jobs = uploads.deck.map(function (f) { return uploadFile(f, 'deck'); })
