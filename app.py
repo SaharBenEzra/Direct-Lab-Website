@@ -89,8 +89,12 @@ NOTIFY_EMAIL = os.environ.get("NOTIFY_EMAIL") or "REPLACE_ME@example.com"
 
 SMTP_HOST = os.environ.get("SMTP_HOST", "smtp.gmail.com")
 SMTP_PORT = int(os.environ.get("SMTP_PORT", "465"))
-SMTP_USER = os.environ.get("SMTP_USER", "")
-SMTP_PASS = os.environ.get("SMTP_PASS", "")
+# .strip() guards against a stray trailing newline/whitespace from pasting
+# into an env var UI. Gmail App Passwords are shown as "abcd efgh ijkl mnop"
+# purely for readability — the real credential has no spaces in it, so it's
+# safe to strip those too rather than fail auth over a copy-paste artifact.
+SMTP_USER = os.environ.get("SMTP_USER", "").strip()
+SMTP_PASS = os.environ.get("SMTP_PASS", "").replace(" ", "").strip()
 
 MAX_BODY = 200 * 1024 * 1024  # 200MB
 
