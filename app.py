@@ -76,7 +76,11 @@ load_dotenv()
 # Vercel needs no renaming.
 MONGO_URI = os.environ.get("MONGO_URI") or os.environ.get("MONGODB_URI") or "mongodb://localhost:27017"
 MONGO_DB_NAME = os.environ.get("MONGO_DB_NAME", "directlab")
-SAVE_TO_LOCAL_DISK = os.environ.get("SAVE_TO_LOCAL_DISK", "true").lower() == "true"
+# Default false: most places this runs (Vercel, Kubernetes) have a
+# read-only or non-durable filesystem, so writing here should always be an
+# explicit opt-in, never assumed. docker-compose.yml sets this to "true"
+# itself for local dev convenience.
+SAVE_TO_LOCAL_DISK = os.environ.get("SAVE_TO_LOCAL_DISK", "false").lower() == "true"
 
 # Where submissions get emailed. Not a secret — edit this default directly,
 # or override per-environment with the NOTIFY_EMAIL env var (e.g. from Helm

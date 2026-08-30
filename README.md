@@ -86,7 +86,7 @@ pip3 install -r requirements.txt
 python3 app.py
 ```
 
-Needs a reachable MongoDB (`MONGO_URI`, default `mongodb://localhost:27017`).
+Needs a reachable MongoDB (`MONGO_URI`, default `mongodb://localhost:27017`). `SAVE_TO_LOCAL_DISK` defaults to `false` everywhere except `docker-compose.yml` (which sets it itself) — set it to `true` yourself if you want the local disk copy running this way.
 
 Either way: email needs `SMTP_USER`/`SMTP_PASS` from a Gmail App Password (Google Account → Security → 2-Step Verification → App passwords). Copy `.env.example` to `.env` and fill them in — `.env` is gitignored and must never be committed. Set the real recipient in `NOTIFY_EMAIL` in `app.py` (or via env var).
 
